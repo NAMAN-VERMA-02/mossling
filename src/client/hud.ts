@@ -1,153 +1,105 @@
-import type { BattleState, Side } from '../engine/engine';
-import { Battler, MAX_ENERGY, Move, StageKey, elementMult } from '../engine/rules';
-import { ELEMENT_COLOR, STAT_LABEL } from './theme';
+import { Art } from './art';
+import { ELEMENT_COLOR } from './theme';
+import type { Element } from '../engine/rules';
 
-export interface HudHandlers {
-  onMove(index: number): void;
-  onSwap(index: number): void;
-  onNew(): void;
-}
-export interface HudMode {
-  busy: boolean;
-}
-
-const chip = (c: Battler) => `<span class="chip" style="--c:${ELEMENT_COLOR[c.element]}">${c.element}</span>`;
-
-function describe(m: Move): string {
-  const e = m.effect;
-  switch (e.kind) {
-    case 'damage': return `power ${m.power}`;
-    case 'heal': return `heal ${e.pct}%`;
-    case 'guard': return 'guard: half damage';
-    case 'raise': return `own ${STAT_LABEL[e.stat]} up`;
-    case 'lower': return `foe ${STAT_LABEL[e.stat]} down`;
-  }
+export interface AlbumEntry {
+  name: string;
+  element: Element;
+  look: string;
+  lv: number;
+  met: boolean;
+  art: Promise<Art>;
 }
 
-function stageText(c: Battler): string {
-  return (Object.keys(c.stages) as StageKey[])
-    .filter((k) => c.stages[k] !== 0)
-    .map((k) => `<b class="${c.stages[k] > 0 ? 'up' : 'down'}">${STAT_LABEL[k]} ${c.stages[k] > 0 ? '+' : ''}${c.stages[k]}</b>`)
-    .join(' ');
-}
+export const hearts = (lv: number) => '♥'.repeat(lv) + '♡'.repeat(3 - lv);
 
-export function createHud(root: HTMLElement, h: HudHandlers) {
+export function createHud(root: HTMLElement, cb: { onBerry: () => void; entries: () => AlbumEntry[] }) {
+  const touch = matchMedia('(pointer: coarse)').matches;
   root.innerHTML = `
-    <div class="top">
-      <section class="card" id="card0"></section>
-      <section class="card foe" id="card1"></section>
-    </div>
-    <div class="fx" id="fx"></div>
-    <div class="dock">
-      <div class="log" id="log" aria-live="polite"></div>
-      <div class="panel">
-        <div class="prompt" id="prompt"></div>
-        <div class="moves" id="moves"></div>
-        <div class="swaps" id="swaps"></div>
+    <div class="fx"></div>
+    <button class="pill" aria-haspopup="dialog">Friends <b>0/12</b></button>
+    <button class="berry" aria-label="Drop a berry" title="Drop a berry (F)">
+      <svg viewBox="0 0 40 40" width="38" height="38" aria-hidden="true"><ellipse cx="20" cy="24" rx="12" ry="11" fill="#ff6f8e"/><ellipse cx="16" cy="20" rx="3.5" ry="2.5" fill="#fff" opacity=".55"/><path d="M20 13c-1-5 3-8 8-7-1 5-4 8-8 7z" fill="#6fcf7f"/></svg>
+    </button>
+    <div class="hint">${touch ? 'Tap the ground to walk · tap a creature to pet it · berry button to feed' : 'WASD / arrows or click to walk · click a creature or press E to pet · F drops a berry · drag to look, wheel to zoom'}</div>
+    <div class="tag" hidden></div>
+    <div class="album" hidden role="dialog" aria-label="Friends album">
+      <div class="sheet">
+        <header><h2>Island friends</h2><button class="close" aria-label="Close">×</button></header>
+        <div class="grid"></div>
       </div>
-    </div>
-    <div class="end" id="end" hidden>
-      <div class="endcard"><h2 id="endtitle"></h2><p id="endsub"></p><button id="newbtn">New battle</button></div>
     </div>`;
-  const $ = (id: string) => root.querySelector<HTMLElement>('#' + id)!;
-  const cards = [$('card0'), $('card1')];
-  cards.forEach((el, side) => {
-    el.innerHTML = `
-      <div class="head"><span class="who">${side === 0 ? 'You' : 'Rival'}</span><span class="name"></span><span class="el"></span></div>
-      <div class="hp"><i class="ghost"></i><i class="fill"></i><span class="hptxt"></span></div>
-      <div class="pips"></div>
-      <div class="stages"></div>
-      <div class="bench"></div>`;
-    el.querySelector('.pips')!.innerHTML = Array.from({ length: MAX_ENERGY }, () => '<u></u>').join('');
-  });
-  $('moves').addEventListener('click', (e) => {
-    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-i]');
-    if (b && !b.disabled) h.onMove(+b.dataset.i!);
-  });
-  $('swaps').addEventListener('click', (e) => {
-    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-i]');
-    if (b && !b.disabled) h.onSwap(+b.dataset.i!);
-  });
-  $('newbtn').addEventListener('click', () => h.onNew());
+  const $ = <T extends HTMLElement>(s: string) => root.querySelector(s) as T;
+  const fx = $('.fx');
+  const pill = $<HTMLButtonElement>('.pill');
+  const album = $('.album');
+  const grid = $('.grid');
+  const tag = $('.tag');
 
-  function render(s: BattleState, mode: HudMode) {
-    for (const side of [0, 1] as Side[]) {
-      const sd = s.sides[side];
-      const c = sd.team[sd.active];
-      const el = cards[side];
-      el.querySelector('.name')!.textContent = c.name;
-      el.querySelector('.el')!.innerHTML = chip(c);
-      const pct = Math.max(0, (c.hp / c.maxHp) * 100);
-      const fill = el.querySelector<HTMLElement>('.fill')!;
-      fill.style.width = pct + '%';
-      fill.dataset.low = pct < 25 ? '2' : pct < 50 ? '1' : '0';
-      el.querySelector<HTMLElement>('.ghost')!.style.width = pct + '%';
-      el.querySelector('.hptxt')!.textContent = `${c.hp} / ${c.maxHp}`;
-      el.querySelectorAll('.pips u').forEach((u, i) => u.classList.toggle('on', i < c.energy));
-      el.querySelector('.stages')!.innerHTML = stageText(c);
-      el.querySelector('.bench')!.innerHTML = sd.team
-        .map((b, i) => `<span class="mini ${i === sd.active ? 'act' : ''} ${b.hp <= 0 ? 'ko' : ''}" style="--c:${ELEMENT_COLOR[b.element]}" title="${b.name}">${b.name}<i style="width:${Math.max(0, (b.hp / b.maxHp) * 100)}%"></i></span>`)
-        .join('');
+  function renderAlbum() {
+    grid.replaceChildren();
+    for (const e of cb.entries()) {
+      const card = document.createElement('div');
+      card.className = 'card' + (e.met ? '' : ' unmet');
+      const portrait = document.createElement('canvas');
+      portrait.width = portrait.height = 128;
+      portrait.style.setProperty('--c', ELEMENT_COLOR[e.element]);
+      void e.art.then((a) => portrait.getContext('2d')!.drawImage(a, 0, 0, 128, 128));
+      const info = document.createElement('div');
+      info.className = 'info';
+      info.innerHTML = e.met
+        ? `<b></b><span class="hearts">${hearts(e.lv)}</span><p></p>`
+        : `<b>???</b><span class="hearts">${hearts(0)}</span><p>Not met yet. Keep exploring!</p>`;
+      if (e.met) {
+        info.querySelector('b')!.textContent = e.name + (e.lv >= 3 ? ' · friend' : '');
+        info.querySelector('p')!.textContent = e.look;
+      }
+      card.append(portrait, info);
+      grid.append(card);
     }
-    const me = s.sides[0];
-    const c = me.team[me.active];
-    const foe = s.sides[1].team[s.sides[1].active];
-    const over = s.winner !== null;
-    const pick = me.mustReplace && !over;
-    const locked = mode.busy || over;
-    $('prompt').textContent = over ? '' : pick ? `${c.name} fainted. Choose who comes next.` : mode.busy ? '' : `What will ${c.name} do?`;
-    $('moves').innerHTML = c.moves
-      .map((m, i) => {
-        const mult = m.effect.kind === 'damage' ? elementMult(m.element, foe.element) : 1;
-        const hint = mult > 1 ? '<em class="good">strong</em>' : mult < 1 ? '<em class="bad">weak</em>' : '';
-        const off = locked || pick || c.energy < m.cost;
-        return `<button class="move" data-i="${i}" style="--c:${ELEMENT_COLOR[m.element]}" ${off ? 'disabled' : ''}>
-          <span class="mn">${m.name}${hint}</span>
-          <span class="mm"><span class="chip" style="--c:${ELEMENT_COLOR[m.element]}">${m.element}</span><span class="cost">cost ${m.cost}</span>${describe(m)}</span></button>`;
-      })
-      .join('');
-    $('swaps').innerHTML =
-      '<span class="lbl">Swap to</span>' +
-      me.team
-        .map((b, i) =>
-          i === me.active
-            ? ''
-            : `<button class="swap" data-i="${i}" style="--c:${ELEMENT_COLOR[b.element]}" ${locked || b.hp <= 0 ? 'disabled' : ''}>${b.name}<small>${b.hp <= 0 ? 'fainted' : `${b.hp}/${b.maxHp}`}</small></button>`,
-        )
-        .join('');
   }
+  const setOpen = (open: boolean) => {
+    album.hidden = !open;
+    if (open) renderAlbum();
+  };
+  pill.onclick = () => setOpen(album.hidden);
+  $('.close').onclick = () => setOpen(false);
+  album.addEventListener('pointerdown', (e) => {
+    if (e.target === album) setOpen(false);
+  });
+  window.addEventListener('keydown', (e) => e.key === 'Escape' && setOpen(false));
+  $('.berry').addEventListener('click', cb.onBerry);
+  setTimeout(() => $('.hint').classList.add('gone'), 12000);
 
   return {
-    render,
-    log(text: string) {
-      const l = $('log');
-      const p = document.createElement('p');
-      p.textContent = text;
-      l.appendChild(p);
-      while (l.children.length > 60) l.firstChild!.remove();
-      l.scrollTop = l.scrollHeight;
+    setFriends(n: number, total: number) {
+      pill.innerHTML = `Friends <b>${n}/${total}</b>`;
+      if (!album.hidden) renderAlbum();
     },
-    float(x: number, y: number, text: string, color: string, big = false) {
-      const f = document.createElement('div');
-      f.className = 'float' + (big ? ' big' : '');
-      f.textContent = text;
-      f.style.left = x + 'px';
-      f.style.top = y + 'px';
-      f.style.color = color;
-      $('fx').appendChild(f);
-      setTimeout(() => f.remove(), 1500);
+    refreshAlbum() {
+      if (!album.hidden) renderAlbum();
     },
-    showEnd(title: string | null, sub = '') {
-      $('end').hidden = title === null;
-      if (title !== null) {
-        $('endtitle').textContent = title;
-        $('endsub').textContent = sub;
-        $('newbtn').focus();
+    isOpen: () => !album.hidden,
+    float(x: number, y: number, text: string, cls = '') {
+      const el = document.createElement('span');
+      el.className = 'float ' + cls;
+      el.textContent = text;
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      fx.append(el);
+      el.addEventListener('animationend', () => el.remove());
+      setTimeout(() => el.remove(), 3500);
+    },
+    /** Show the name tag at a screen point, or hide it with null. */
+    tag(text: string | null, x = 0, y = 0) {
+      tag.hidden = text === null;
+      if (text !== null) {
+        if (tag.dataset.t !== text) {
+          tag.textContent = text;
+          tag.dataset.t = text;
+        }
+        tag.style.transform = `translate(${Math.max(70, Math.min(innerWidth - 70, x))}px, ${Math.max(34, y)}px) translate(-50%, -100%)`;
       }
-    },
-    clearLog() {
-      $('log').innerHTML = '';
     },
   };
 }
-export type Hud = ReturnType<typeof createHud>;
